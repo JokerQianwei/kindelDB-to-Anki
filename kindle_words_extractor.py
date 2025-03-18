@@ -100,8 +100,8 @@ class ECDICTDictionary:
         except sqlite3.Error:
             pass  # 如果索引已存在则忽略
     
-    def lookup_word(self, word: str) -> str:
-        """查询单词释义"""
+    def lookup_word(self, word: str) -> Tuple[str, Optional[str]]:
+        """查询单词释义，返回(释义HTML, 词形变化原型)元组"""
         word_lower = word.lower()
         if word_lower in self._cache:
             return self._cache[word_lower]
@@ -128,10 +128,19 @@ class ECDICTDictionary:
             result = self.cursor.fetchone()
         
         if result:
+            # 提取词形变化中的原型
+            exchange = result[10]  # exchange字段
+            word_root = None
+            if exchange:
+                for part in exchange.split('/'):
+                    if part.startswith('0:'):  # 0: 表示原型
+                        word_root = part.split(':', 1)[1]
+                        break
+            
             entry = self._format_entry(result)
-            self._cache[word_lower] = entry
-            return entry
-        return "未找到释义"
+            self._cache[word_lower] = (entry, word_root)
+            return (entry, word_root)
+        return ("未找到释义", None)
     
     def _format_entry(self, result: tuple) -> str:
         """格式化词典条目"""
@@ -365,7 +374,12 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
             for word_info in words_list:
                 word = word_info['单词']
                 stem = word_info['原型'] or word  # 使用原型查询，如果没有原型则使用原单词
-                dictionary_entry = dictionary.lookup_word(stem)  # 使用stem查询词频信息
+                
+                # 使用stem查询词典，获取释义和可能的词形变化原型
+                dictionary_entry, dict_word_root = dictionary.lookup_word(stem)
+                
+                # 确定最终显示的单词形式：优先使用词典中的原型，其次用Kindle的stem，最后用原单词
+                display_word = dict_word_root or stem or word
                 
                 # 添加CSS样式
                 css_style = """
@@ -406,13 +420,19 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
                 
                 # 合并单词相关信息
                 word_info_formatted = f"{css_style}<div class='word-entry'>"
-                word_info_formatted += f"<div class='word-title'>{stem}</div>"
+                word_info_formatted += f"<div class='word-title'>{display_word}</div>"
                 if word_info['来源']:
-                    # 高亮显示原句中的目标单词及其变形
+                    # 高亮显示原句中的所有相关形式
                     highlighted_source = _highlight_word(word_info['来源'], word)
+                    
                     # 如果stem不同于word，也高亮stem
                     if stem and stem != word:
                         highlighted_source = _highlight_word(highlighted_source, stem)
+                        
+                    # 如果词典原型不同于stem和word，也高亮
+                    if dict_word_root and dict_word_root != stem and dict_word_root != word:
+                        highlighted_source = _highlight_word(highlighted_source, dict_word_root)
+                        
                     word_info_formatted += f"<div class='source'>{highlighted_source}</div>"
                 word_info_formatted += "</div>"
                 
