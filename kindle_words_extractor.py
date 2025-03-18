@@ -34,6 +34,7 @@ class KindleVocabularyExtractor:
         query = """
         SELECT 
             w.word as word,
+            w.stem as stem,
             GROUP_CONCAT(l.usage, '|||') as usages
         FROM WORDS w
         LEFT JOIN LOOKUPS l ON w.id = l.word_key
@@ -50,6 +51,7 @@ class KindleVocabularyExtractor:
             
             for row in self.cursor:
                 word = row['word']
+                stem = row['stem']
                 if ':' in word:  # 处理类似 'en:word' 格式的单词
                     word = word.split(':', 1)[1]
                 
@@ -65,6 +67,7 @@ class KindleVocabularyExtractor:
                 
                 words_list.append({
                     '单词': word,
+                    '原型': stem,
                     '来源': cleaned_usages
                 })
             
@@ -361,7 +364,8 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
         with tqdm(total=total_words, desc="处理进度") as pbar:
             for word_info in words_list:
                 word = word_info['单词']
-                dictionary_entry = dictionary.lookup_word(word)
+                stem = word_info['原型'] or word  # 使用原型查询，如果没有原型则使用原单词
+                dictionary_entry = dictionary.lookup_word(stem)  # 使用stem查询词频信息
                 
                 # 添加CSS样式
                 css_style = """
@@ -402,10 +406,13 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
                 
                 # 合并单词相关信息
                 word_info_formatted = f"{css_style}<div class='word-entry'>"
-                word_info_formatted += f"<div class='word-title'>{word}</div>"
+                word_info_formatted += f"<div class='word-title'>{stem}</div>"
                 if word_info['来源']:
-                    # 高亮显示原句中的目标单词
+                    # 高亮显示原句中的目标单词及其变形
                     highlighted_source = _highlight_word(word_info['来源'], word)
+                    # 如果stem不同于word，也高亮stem
+                    if stem and stem != word:
+                        highlighted_source = _highlight_word(highlighted_source, stem)
                     word_info_formatted += f"<div class='source'>{highlighted_source}</div>"
                 word_info_formatted += "</div>"
                 
