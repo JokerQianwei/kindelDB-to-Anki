@@ -16,6 +16,20 @@ import argparse
 from typing import Tuple, List, Dict, Optional
 from tqdm import tqdm
 import re
+import requests
+import json
+
+# 导入配置文件
+try:
+    from config import AI_API_CONFIG
+except ImportError:
+    # 默认配置，以防配置文件不存在
+    AI_API_CONFIG = {
+        "API_KEY": "",
+        "API_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "MODEL": "qwen-turbo-latest"
+    }
+    print("警告: 未找到配置文件config.py，将使用默认配置")
 
 
 class KindleVocabularyExtractor:
@@ -386,6 +400,21 @@ class ECDICTDictionary:
             font-weight: bold;
             padding: 0 2px;
         }
+        .ai-explanation {
+            margin-top: 12px;
+            background-color: #f1f8ff;
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 3px solid #58a6ff;
+        }
+        .ai-content {
+            white-space: pre-line;
+        }
+        .ai-error {
+            color: #d63384;
+            font-style: italic;
+            margin-top: 8px;
+        }
         </style>
         """
         
@@ -517,7 +546,72 @@ def _highlight_word(text: str, word: str) -> str:
     return highlighted
 
 
-def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optional[str] = None, limit: Optional[int] = None) -> Tuple[str, int]:
+def _translate_with_ai(word: str, sentence: str, api_key: str = None, api_url: str = None, model: str = None) -> str:
+    """使用阿里云通义千问API翻译单词在例句中的含义"""
+    # 如果没有例句，直接返回空字符串
+    if not sentence or not word:
+        return ""
+    
+    # 使用配置文件中的API信息，如果未指定则使用默认值
+    api_key = api_key or AI_API_CONFIG.get("API_KEY", "")
+    api_url = api_url or AI_API_CONFIG.get("API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+    model = model or AI_API_CONFIG.get("MODEL", "qwen-turbo-latest")
+    
+    # 确保API密钥存在
+    if not api_key:
+        return "<div class='ai-error'>未配置API密钥，请在config.py中设置API_KEY</div>"
+    
+    # 移除HTML标签
+    clean_sentence = re.sub(r'<.*?>', '', sentence)
+    
+    # 构建请求头
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    # 构建请求内容
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system", 
+                "content": "你是一个精通英语的助手，专门提供单词在特定例句中的含义解释。"
+            },
+            {
+                "role": "user", 
+                "content": f"请解释单词'{word}'在以下例句中的含义，并提供例句的中文翻译。格式要求：\n1. 第一行：单词在例句中的含义\n2. 第二行：例句的中文翻译\n\n例句：{clean_sentence}"
+            }
+        ]
+    }
+    
+    try:
+        # 发送API请求
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        response_data = response.json()
+        
+        # 检查响应是否成功
+        if response.status_code == 200 and 'choices' in response_data:
+            # 提取AI的回复
+            ai_explanation = response_data['choices'][0]['message']['content']
+            
+            # 格式化显示 - 删除机器人图标
+            formatted_explanation = f"""<div class="ai-explanation">
+                <div class="ai-content">{ai_explanation}</div>
+            </div>"""
+            
+            return formatted_explanation
+        else:
+            # 如果请求失败，返回错误信息
+            error_msg = response_data.get('error', {}).get('message', '未知错误')
+            return f"<div class='ai-error'>API请求失败: {error_msg}</div>"
+    
+    except Exception as e:
+        return f"<div class='ai-error'>API请求出错: {str(e)}</div>"
+
+
+def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optional[str] = None, limit: Optional[int] = None, 
+                              ai_translation: bool = True) -> Tuple[str, int]:
     """处理Kindle词汇并添加词典释义"""
     # 如果没有指定输出文件，使用默认名称
     if output_file is None:
@@ -558,6 +652,16 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
                     # 如果stem不同于word，也高亮stem
                     if stem and stem != word:
                         highlighted_source = _highlight_word(highlighted_source, stem)
+                    
+                    # 如果启用了AI翻译，获取单词在例句中的含义解释
+                    ai_explanation = ""
+                    if ai_translation and source_text:
+                        print(f"\n正在翻译单词 '{word}' 在例句中的含义...")
+                        ai_explanation = _translate_with_ai(word, source_text)
+                        # 如果AI解释为空，则不添加
+                        if ai_explanation:
+                            # 减小例句和AI解释之间的间隔
+                            highlighted_source = f"{highlighted_source}{ai_explanation}"
                 else:
                     highlighted_source = ""
                 
@@ -670,7 +774,8 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
         with open(output_file, 'w', newline='', encoding='utf-8') as outfile:
             fieldnames = ['单词', '释义与例句']
             writer = csv.DictWriter(outfile, fieldnames=fieldnames)
-            writer.writeheader()
+            # 不写入CSV标题行
+            # writer.writeheader()
             writer.writerows(new_rows)
         
         # 5. 关闭词典
@@ -691,6 +796,7 @@ def main():
                       help='ECDICT词典数据库文件路径，默认为当前目录下的stardict.db')
     parser.add_argument('-o', '--output', help='输出CSV文件路径（可选）')
     parser.add_argument('-l', '--limit', type=int, help='限制处理的单词数量（可选）')
+    parser.add_argument('--no-ai', action='store_true', help='禁用AI翻译功能')
     
     args = parser.parse_args()
     
@@ -714,11 +820,13 @@ def main():
         print(f"开始处理...\n")
         print(f"使用Kindle数据库: {args.kindle_db}")
         print(f"使用词典数据库: {args.dict_db}")
+        print(f"AI翻译功能: {'已禁用' if args.no_ai else '已启用'}")
         output_file, count = process_kindle_vocabulary(
             args.kindle_db,
             args.dict_db,
             args.output,
-            args.limit
+            args.limit,
+            not args.no_ai  # 取反，如果--no-ai被指定，则禁用AI翻译
         )
         print(f"\n处理完成！")
         print(f"成功处理 {count} 个单词")
