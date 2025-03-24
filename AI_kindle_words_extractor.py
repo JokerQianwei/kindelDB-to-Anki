@@ -666,7 +666,6 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
             existing_words = get_existing_words(output_file)
         
         # 1. 提取Kindle单词
-        print("正在从Kindle数据库提取单词...")
         kindle_extractor = KindleVocabularyExtractor(kindle_db)
         all_words_list = kindle_extractor.extract_words(limit)
         kindle_extractor.close()
