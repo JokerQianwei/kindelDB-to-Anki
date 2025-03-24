@@ -622,9 +622,18 @@ def get_existing_words(csv_file: str) -> Set[str]:
                 else:
                     # 尝试从HTML内容中提取单词
                     word_html = first_row[0]
-                    word_match = re.search(r'<div class="word-display">(.*?)</div>', word_html)
-                    if word_match:
-                        existing_words.add(word_match.group(1).lower())
+                    # 尝试多种提取模式
+                    patterns = [
+                        r'<div class="word-display">(.*?)</div>',
+                        r'word-title">(.*?)</div>',
+                        r'<strong>(.*?)</strong>'
+                    ]
+                    for pattern in patterns:
+                        word_match = re.search(pattern, word_html)
+                        if word_match:
+                            word = word_match.group(1).lower().strip()
+                            existing_words.add(word)
+                            break
             except StopIteration:
                 pass  # 文件是空的
                 
@@ -633,11 +642,48 @@ def get_existing_words(csv_file: str) -> Set[str]:
                 if len(row) >= 1:
                     # 尝试从HTML内容中提取单词
                     word_html = row[0]
-                    word_match = re.search(r'<div class="word-display">(.*?)</div>', word_html)
-                    if word_match:
-                        existing_words.add(word_match.group(1).lower())
+                    # 尝试多种提取模式
+                    extracted = False
+                    patterns = [
+                        r'<div class="word-display">(.*?)</div>',
+                        r'word-title">(.*?)</div>',
+                        r'<strong>(.*?)</strong>'
+                    ]
+                    for pattern in patterns:
+                        word_match = re.search(pattern, word_html)
+                        if word_match:
+                            word = word_match.group(1).lower().strip()
+                            existing_words.add(word)
+                            extracted = True
+                            break
+                    
+                    # 如果没有通过正则提取到，尝试更简单的HTML清理方式
+                    if not extracted and word_html:
+                        # 移除所有HTML标签
+                        clean_word = re.sub(r'<.*?>', '', word_html).strip().lower()
+                        if clean_word and len(clean_word) < 30:  # 避免添加整个文本块
+                            words = re.findall(r'\b[a-zA-Z]+\b', clean_word)
+                            if words:
+                                existing_words.add(words[0])  # 添加第一个单词
         
-        print(f"从现有CSV文件中读取了 {len(existing_words)} 个单词")
+        # 添加常见词形变化以提高匹配率
+        expanded_words = set(existing_words)
+        for word in existing_words:
+            # 处理常见的词形变化
+            if word.endswith('s') and len(word) > 2:
+                expanded_words.add(word[:-1])  # 可能的单数形式
+            if word.endswith('es') and len(word) > 3:
+                expanded_words.add(word[:-2])  # 可能的单数形式
+            if word.endswith('ed') and len(word) > 3:
+                expanded_words.add(word[:-2])  # 可能的原形
+                if len(word) > 4 and word[-3] == word[-4]:  # 双写辅音，如stopped->stop
+                    expanded_words.add(word[:-3])
+            if word.endswith('ing') and len(word) > 4:
+                expanded_words.add(word[:-3])  # 可能的原形
+                expanded_words.add(word[:-3] + 'e')  # 如writing->write
+        
+        existing_words = expanded_words
+        print(f"从现有CSV文件中读取了 {len(existing_words)} 个单词（包含词形变化）")
         return existing_words
     except Exception as e:
         print(f"读取现有CSV文件时出错: {e}")
@@ -667,12 +713,51 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
         if incremental_update and existing_words:
             total_kindle_words = len(all_words_list)
             new_words_list = []
+            
+            # 初始化词典以便查询单词原型
+            dictionary = ECDICTDictionary(dict_db)
+            
             for word_info in all_words_list:
                 word = word_info['单词'].lower()
                 stem = word_info['原型'].lower() if word_info['原型'] else word
-                # 检查单词或原型是否已存在
-                if word not in existing_words and (not stem or stem not in existing_words):
+                
+                # 收集所有可能的单词形式
+                possible_forms = set([word, stem])
+                
+                # 尝试从词典获取更多可能的形式
+                try:
+                    # 查询词典以获取可能的词形变化
+                    self_cursor = dictionary.cursor
+                    self_cursor.execute(
+                        "SELECT exchange FROM stardict WHERE LOWER(word) = LOWER(?)", 
+                        (stem,)
+                    )
+                    exchange_result = self_cursor.fetchone()
+                    
+                    # 尝试提取可能的原型
+                    if exchange_result and exchange_result[0]:
+                        exchange = exchange_result[0]
+                        for part in exchange.split('/'):
+                            if ':' in part:
+                                _, forms = part.split(':', 1)
+                                if forms:
+                                    for form in forms.split('/'):
+                                        possible_forms.add(form.lower())
+                except Exception:
+                    pass  # 忽略词典查询错误
+                
+                # 检查是否所有可能的形式都不在现有单词列表中
+                is_new_word = True
+                for form in possible_forms:
+                    if form in existing_words:
+                        is_new_word = False
+                        break
+                
+                if is_new_word:
                     new_words_list.append(word_info)
+            
+            # 关闭词典连接
+            dictionary.close()
             
             duplicate_words = total_kindle_words - len(new_words_list)
             print(f"Kindle数据库中共有 {total_kindle_words} 个单词")
