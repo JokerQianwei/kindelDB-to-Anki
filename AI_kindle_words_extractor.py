@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Kindle单词提取和词典查询工具
-功能：
-1. 从Kindle词汇数据库中提取单词
-2. 使用ECDICT查询详细释义
-3. 生成包含单词信息和词典释义的CSV文件
-"""
 
 import sqlite3
 import csv
