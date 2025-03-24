@@ -569,11 +569,11 @@ def _translate_with_ai(word: str, sentence: str, api_key: str = None, api_url: s
         "messages": [
             {
                 "role": "system", 
-                "content": "你是一个精通英语的助手，专门提供单词在特定例句中的含义解释。"
+                "content": "你是一个精通英语的助手，专门提供单词在特定例句中的含义解释。请保持回答简洁准确。"
             },
             {
                 "role": "user", 
-                "content": f"请解释单词'{word}'在以下例句中的含义，并提供例句的中文翻译。格式要求：\n- 单词解释：（简洁地解释单词在例句中的含义）\n- 例句翻译：（例句的中文翻译）\n请使用上述项目符号格式，保持简洁美观。\n\n例句：{clean_sentence}"
+                "content": f"解释单词'{word}'在例句中的含义并翻译例句：\n[单词解释]：简洁说明词义。[例句翻译]：翻译成中文\n例句：{clean_sentence}"
             }
         ]
     }
