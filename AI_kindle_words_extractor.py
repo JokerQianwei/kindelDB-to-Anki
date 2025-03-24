@@ -13,7 +13,7 @@ import csv
 import os
 import sys
 import argparse
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple, List, Dict, Optional, Set
 from tqdm import tqdm
 import re
 import requests
@@ -580,7 +580,7 @@ def _translate_with_ai(word: str, sentence: str, api_key: str = None, api_url: s
             },
             {
                 "role": "user", 
-                "content": f"请解释单词'{word}'在以下例句中的含义，并提供例句的中文翻译。格式要求：\n1. 第一行：单词在例句中的含义\n2. 第二行：例句的中文翻译\n\n例句：{clean_sentence}"
+                "content": f"请解释单词'{word}'在以下例句中的含义，并提供例句的中文翻译。格式要求：\n- 单词解释：（简洁地解释单词在例句中的含义）\n- 例句翻译：（例句的中文翻译）\n请使用上述项目符号格式，保持简洁美观。\n\n例句：{clean_sentence}"
             }
         ]
     }
@@ -610,8 +610,49 @@ def _translate_with_ai(word: str, sentence: str, api_key: str = None, api_url: s
         return f"<div class='ai-error'>API请求出错: {str(e)}</div>"
 
 
+def get_existing_words(csv_file: str) -> Set[str]:
+    """获取现有CSV文件中已存在的单词"""
+    if not os.path.exists(csv_file):
+        return set()
+    
+    existing_words = set()
+    try:
+        with open(csv_file, 'r', encoding='utf-8') as infile:
+            reader = csv.reader(infile)
+            # 跳过标题行（如果有）
+            try:
+                first_row = next(reader)
+                # 检查是否有列标题
+                if len(first_row) == 2 and first_row[0] != first_row[1]:
+                    # 这可能是标题行，不处理
+                    pass
+                else:
+                    # 尝试从HTML内容中提取单词
+                    word_html = first_row[0]
+                    word_match = re.search(r'<div class="word-display">(.*?)</div>', word_html)
+                    if word_match:
+                        existing_words.add(word_match.group(1).lower())
+            except StopIteration:
+                pass  # 文件是空的
+                
+            # 读取剩余行
+            for row in reader:
+                if len(row) >= 1:
+                    # 尝试从HTML内容中提取单词
+                    word_html = row[0]
+                    word_match = re.search(r'<div class="word-display">(.*?)</div>', word_html)
+                    if word_match:
+                        existing_words.add(word_match.group(1).lower())
+        
+        print(f"从现有CSV文件中读取了 {len(existing_words)} 个单词")
+        return existing_words
+    except Exception as e:
+        print(f"读取现有CSV文件时出错: {e}")
+        return set()
+
+
 def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optional[str] = None, limit: Optional[int] = None, 
-                              ai_translation: bool = True) -> Tuple[str, int]:
+                              ai_translation: bool = True, incremental_update: bool = True) -> Tuple[str, int]:
     """处理Kindle词汇并添加词典释义"""
     # 如果没有指定输出文件，使用默认名称
     if output_file is None:
@@ -619,11 +660,40 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
         output_file = f"{base_name}_processed.csv"
     
     try:
+        # 获取现有CSV文件中的单词
+        existing_words = set()
+        if incremental_update and os.path.exists(output_file):
+            existing_words = get_existing_words(output_file)
+        
         # 1. 提取Kindle单词
         print("正在从Kindle数据库提取单词...")
         kindle_extractor = KindleVocabularyExtractor(kindle_db)
-        words_list = kindle_extractor.extract_words(limit)
+        all_words_list = kindle_extractor.extract_words(limit)
         kindle_extractor.close()
+        
+        # 如果是增量更新，过滤出新单词
+        if incremental_update and existing_words:
+            total_kindle_words = len(all_words_list)
+            new_words_list = []
+            for word_info in all_words_list:
+                word = word_info['单词'].lower()
+                stem = word_info['原型'].lower() if word_info['原型'] else word
+                # 检查单词或原型是否已存在
+                if word not in existing_words and (not stem or stem not in existing_words):
+                    new_words_list.append(word_info)
+            
+            duplicate_words = total_kindle_words - len(new_words_list)
+            print(f"Kindle数据库中共有 {total_kindle_words} 个单词")
+            print(f"其中与CSV文件重复的单词数: {duplicate_words} 个")
+            print(f"需要处理的新单词数: {len(new_words_list)} 个")
+            words_list = new_words_list
+        else:
+            words_list = all_words_list
+        
+        # 如果没有新单词需要处理，直接返回
+        if not words_list:
+            print("没有新单词需要处理，退出程序")
+            return output_file, 0
         
         # 2. 初始化词典
         dictionary = ECDICTDictionary(dict_db)
@@ -661,7 +731,7 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
                         # 如果AI解释为空，则不添加
                         if ai_explanation:
                             # 减小例句和AI解释之间的间隔
-                            highlighted_source = f"{highlighted_source}{ai_explanation}"
+                            highlighted_source = f"{highlighted_source}<br>{ai_explanation}"
                 else:
                     highlighted_source = ""
                 
@@ -771,12 +841,36 @@ def process_kindle_vocabulary(kindle_db: str, dict_db: str, output_file: Optiona
                 pbar.update(1)
         
         # 4. 写入输出文件
-        with open(output_file, 'w', newline='', encoding='utf-8') as outfile:
-            fieldnames = ['单词', '释义与例句']
-            writer = csv.DictWriter(outfile, fieldnames=fieldnames)
-            # 不写入CSV标题行
-            # writer.writeheader()
-            writer.writerows(new_rows)
+        if incremental_update and os.path.exists(output_file):
+            # 增量更新模式：读取现有内容，追加新内容
+            existing_rows = []
+            try:
+                with open(output_file, 'r', newline='', encoding='utf-8') as infile:
+                    reader = csv.reader(infile)
+                    for row in reader:
+                        if row:  # 确保行不为空
+                            existing_rows.append(row)
+            except Exception as e:
+                print(f"读取现有CSV文件内容时出错: {e}")
+                existing_rows = []
+            
+            # 将新行添加到现有内容中
+            with open(output_file, 'w', newline='', encoding='utf-8') as outfile:
+                writer = csv.writer(outfile)
+                # 写入现有内容
+                for row in existing_rows:
+                    writer.writerow(row)
+                # 写入新内容
+                for row_dict in new_rows:
+                    writer.writerow([row_dict['单词'], row_dict['释义与例句']])
+        else:
+            # 全新写入模式
+            with open(output_file, 'w', newline='', encoding='utf-8') as outfile:
+                fieldnames = ['单词', '释义与例句']
+                writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+                # 不写入CSV标题行
+                # writer.writeheader()
+                writer.writerows(new_rows)
         
         # 5. 关闭词典
         dictionary.close()
@@ -797,6 +891,7 @@ def main():
     parser.add_argument('-o', '--output', help='输出CSV文件路径（可选）')
     parser.add_argument('-l', '--limit', type=int, help='限制处理的单词数量（可选）')
     parser.add_argument('--no-ai', action='store_true', help='禁用AI翻译功能')
+    parser.add_argument('-f', '--full', action='store_true', help='全量更新模式，处理所有单词')
     
     args = parser.parse_args()
     
@@ -821,12 +916,14 @@ def main():
         print(f"使用Kindle数据库: {args.kindle_db}")
         print(f"使用词典数据库: {args.dict_db}")
         print(f"AI翻译功能: {'已禁用' if args.no_ai else '已启用'}")
+        print(f"更新模式: {'全量更新' if args.full else '增量更新'}")
         output_file, count = process_kindle_vocabulary(
             args.kindle_db,
             args.dict_db,
             args.output,
             args.limit,
-            not args.no_ai  # 取反，如果--no-ai被指定，则禁用AI翻译
+            not args.no_ai,  # 取反，如果--no-ai被指定，则禁用AI翻译
+            not args.full    # 取反，如果--full被指定，则不使用增量更新
         )
         print(f"\n处理完成！")
         print(f"成功处理 {count} 个单词")
