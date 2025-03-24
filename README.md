@@ -6,12 +6,14 @@
 
 - 📚 自动提取Kindle生词本，包含完整的原句上下文
 - 🔍 智能识别和高亮显示原句中的目标单词
+- 🤖 AI翻译功能：自动解释单词在例句中的含义和例句翻译
 - 📖 自动查询ECDICT词典，获取全面的单词信息：
   - 📝 音标和词性标注
   - 🈺 中英文双语释义
   - 📊 词频信息（柯林斯星级、牛津核心词等）
   - 🔄 词形变化（时态、单复数等）
   - 💡 补充信息和例句
+- 🔄 增量更新模式：智能识别新单词，避免重复处理
 - 🎨 美观的 Anki 卡牌样式
 
 ## 使用效果
@@ -34,13 +36,26 @@ system/vocabulary/vocab.db
 3. 解压得到`stardict.db`文件
 4. 将`stardict.db`放到工具所在目录
 
+### 3. 配置AI功能（可选）
+
+如需使用AI翻译功能，需创建`config.py`文件并添加以下内容：
+
+```python
+# 阿里云通义千问API配置
+AI_API_CONFIG = {
+    "API_KEY": "您的API密钥", 
+    "API_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "MODEL": "qwen-turbo-latest"  # 或其他支持的模型
+}
+```
+
 ## 安装和使用
 
 ### 安装依赖
 ```bash
 # 安装所需的Python包
 pip install tqdm        # 进度条显示
-pip install pandas      # 数据处理
+pip install requests    # HTTP请求（AI功能需要）
 ```
 
 
@@ -58,9 +73,30 @@ python kindle_words_extractor.py -l 100
 # 指定输出文件
 python kindle_words_extractor.py -o mywords.csv
 
+# 禁用AI翻译功能
+python kindle_words_extractor.py --no-ai
+
+# 全量更新模式（处理所有单词，不检查重复）
+python kindle_words_extractor.py -f
+
 # 查看帮助
 python kindle_words_extractor.py -h
 ```
+
+## 功能说明 🛠️
+
+### AI翻译功能
+
+- 基于大语言模型自动分析例句中的单词含义
+- 提供单词在特定语境下的精准解释
+- 翻译原句，帮助理解整体意思
+- 可通过`--no-ai`参数关闭该功能
+
+### 增量更新模式
+
+- 默认启用，自动检测已处理的单词
+- 只处理新增的单词，避免重复导入
+- 可通过`-f`或`--full`参数切换到全量更新模式
 
 ## 输出格式 📋
 
@@ -69,6 +105,7 @@ python kindle_words_extractor.py -h
 ### 单词信息
 - 单词本身
 - 原句上下文（自动高亮目标单词）
+- AI翻译解释（如启用）
 
 ### 词典释义
 1. 发音与词性
@@ -165,6 +202,7 @@ python kindle_words_extractor.py -h
 - CSV文件使用UTF-8编码
 - 首次运行可能需要建立数据库索引，请耐心等待
 - 建议定期更新ECDICT词典数据库以获取最新内容
+- AI功能需要网络连接和API密钥
 
 ## 常见问题 ❓
 
@@ -179,4 +217,10 @@ A: 可以修改代码中的CSS样式部分，支持自定义颜色、字体、�
 
 Q: 处理速度较慢？  
 A: 首次运行时会建立数据库索引，后续运行会更快。也可以使用`-l`参数限制处理词数。
+
+Q: AI功能不工作？  
+A: 请检查`config.py`文件是否正确配置，以及API密钥是否有效。
+
+Q: 如何避免重复处理已导入的单词？  
+A: 工具默认使用增量更新模式，只处理新单词。如需全量更新，请使用`-f`参数。
 
